@@ -72,6 +72,8 @@ CI 对公开源码执行扫描、CPU/JVM 测试和 Android 原生构建，不使
 game/extracted/ExeFS/main
 game/extracted/ExeFS/sdk
 game/extracted/RomFS/...
+game/extracted/Control/control.nacp
+game/extracted/Control/icon_SimplifiedChinese.dat
 ```
 
 仓库不提供游戏提取工具、密钥或下载渠道。
@@ -117,7 +119,9 @@ python tools/test_rtg_controller_font.py \
 
 ## 本地打包与运行
 
-打包直接读取上述模块，**不依赖历史 APK**。先创建仅供本地开发的签名密钥：
+打包直接读取上述模块，**不依赖历史 APK**。应用显示名称和启动图标读取自本地游戏的 Control 内容：`control.nacp` 和对应语言的 `icon_<语言>.dat`，默认使用简体中文，可用 `--game-language` 选择其他语言。名称不追加“移动版”，原版 JPEG 图标按原始字节复制；这些资源只生成在被忽略的构建目录中，不进入源码仓库。Control 内容需从自己的游戏中单独提取，不能用游戏程序的 RomFS 目录替代。
+
+先创建仅供本地开发的签名密钥：
 
 ```sh
 mkdir -p .local
@@ -131,6 +135,7 @@ python tools/package_android.py \
   --modules build/modules --native build/android/librtg_mobile_android.so \
   --shaders build/shaders --shared-font build/fonts/ArialUnicode.ttf \
   --messages game/extracted/RomFS/mesg \
+  --game-control game/extracted/Control \
   --jdk "$JAVA_HOME" --sdk "$ANDROID_SDK_ROOT" \
   --keystore .local/debug.keystore --output build/local-apk
 ```

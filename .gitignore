@@ -42,6 +42,8 @@ saves/
 *.nca
 *.nso
 *.npdm
+*.nacp
+icon_*.dat
 *.romfs
 *.msbt
 *.bfres

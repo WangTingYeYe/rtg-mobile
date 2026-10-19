@@ -11,12 +11,59 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import xml.etree.ElementTree as ET
 import zipfile
 from rtg_message_symbols import private_symbols
 
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
+
+
+# NACP's UTF-8 title entries and language order are documented by libnx:
+# https://github.com/switchbrew/libnx/blob/master/nx/include/switch/nacp.h
+# https://github.com/switchbrew/libnx/blob/master/nx/source/runtime/nacp.c
+GAME_LANGUAGES = (
+    'AmericanEnglish', 'BritishEnglish', 'Japanese', 'French', 'German',
+    'LatinAmericanSpanish', 'Spanish', 'Italian', 'Dutch', 'CanadianFrench',
+    'Portuguese', 'Russian', 'Korean', 'TraditionalChinese', 'SimplifiedChinese',
+    'BrazilianPortuguese',
+)
+
+
+def game_identity(directory, language):
+    """Read only the selected title and JPEG icon from the local Control data."""
+    if language not in GAME_LANGUAGES:
+        raise ValueError(f'Unknown game language: {language}')
+    control = (directory / 'control.nacp').read_bytes()
+    if len(control) != 0x4000 or control[0x3215] != 0:
+        raise ValueError('Unsupported control.nacp: expected 16 uncompressed title entries')
+    offset = GAME_LANGUAGES.index(language) * 0x300
+    title = control[offset:offset + 0x200]
+    if b'\0' not in title:
+        raise ValueError('Game title is not NUL-terminated')
+    name = title.split(b'\0', 1)[0].decode('utf-8')
+    if not name.strip() or any(ord(c) < 32 for c in name):
+        raise ValueError(f'No valid game title for {language}; select --game-language explicitly')
+    icon = (directory / ('icon_' + language + '.dat')).read_bytes()
+    if not 0 < len(icon) <= 0x20000 or not icon.startswith(b'\xff\xd8\xff') or not icon.endswith(b'\xff\xd9'):
+        raise ValueError(f'icon_{language}.dat must contain the original JPEG icon')
+    return dict(app_name=name, game_language=language, control_sha256=sha(control),
+                icon_sha256=sha(icon)), icon
+
+
+def write_game_resources(resources, identity, icon):
+    """Generate local Android resources, preserving the original icon bytes."""
+    resources.mkdir(parents=True, exist_ok=False)
+    values = resources / 'values'; values.mkdir()
+    mipmap = resources / 'mipmap-nodpi'; mipmap.mkdir()
+    (mipmap / 'ic_launcher.jpg').write_bytes(icon)
+    strings = ET.Element('resources')
+    title = ET.SubElement(strings, 'string', name='app_name', translatable='false')
+    # Android quoting preserves spaces, apostrophes and leading @/? characters;
+    # XML escaping is handled separately by ElementTree.
+    title.text = '"' + identity['app_name'].replace('\\', '\\\\').replace('"', '\\"') + '"'
+    ET.ElementTree(strings).write(values / 'game_identity.xml', encoding='utf-8', xml_declaration=True)
 
 
 def module_assets(directory):
@@ -60,6 +107,10 @@ def main():
     parser.add_argument('--native', type=Path, required=True)
     parser.add_argument('--shaders', type=Path, required=True)
     parser.add_argument('--shared-font', type=Path, required=True, help='Locally built shared TTF, including RTG controller aliases')
+    parser.add_argument('--game-control', type=Path, required=True,
+                        help='Local Control directory containing control.nacp and icon_<language>.dat')
+    parser.add_argument('--game-language', choices=GAME_LANGUAGES, default='SimplifiedChinese',
+                        help='Use this language for the original game title and launcher icon (default: SimplifiedChinese)')
     parser.add_argument('--jdk', type=Path, required=True)
     parser.add_argument('--sdk', type=Path, required=True)
     parser.add_argument('--keystore', type=Path, required=True)
@@ -72,6 +123,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     if not os.environ.get(args.ks_pass_env):
         parser.error(f'Set {args.ks_pass_env} to the local keystore/key password')
+    identity, icon = game_identity(args.game_control, args.game_language)
     replacements = module_assets(args.modules)
     shader_files, entries = shader_assets(args.shaders)
     replacements.update(shader_files)
@@ -102,17 +154,15 @@ def main():
         if result.returncode:
             raise RuntimeError((result.stdout + result.stderr).decode(errors='replace')[-4000:])
 
-    # Compile the project's manifest instead of inheriting D2R branding and
-    # package identity from the historical bootstrap APK.
-    resources = root / 'rtg/android/res'
-    compiled = []
-    if resources.is_dir() and any(p.is_file() for p in resources.rglob('*')):
-        resource_zip = output / 'resources.zip'
-        run([buildtools / 'aapt2', 'compile', '--dir', resources, '-o', resource_zip], 'resources')
-        compiled = [resource_zip]
+    # Original artwork is generated into the local build directory, never into
+    # tracked sources. Do not carry over the old vector/adaptive launcher icon.
+    resources = output / 'res'
+    write_game_resources(resources, identity, icon)
+    resource_zip = output / 'resources.zip'
+    run([buildtools / 'aapt2', 'compile', '--dir', resources, '-o', resource_zip], 'resources')
     manifest_apk = output / 'manifest.apk'
     run([buildtools / 'aapt2', 'link', '--manifest', root / 'rtg/android/AndroidManifest.xml',
-         '-I', android, '-o', manifest_apk, *compiled], 'manifest')
+         '-I', android, '-o', manifest_apk, resource_zip], 'manifest')
 
     sources = sorted((root / 'rtg/android/src').rglob('*.java'))
     run([args.jdk / 'bin/javac', '--release', '8', '-encoding', 'UTF-8', '-cp',
@@ -135,6 +185,7 @@ def main():
     run([buildtools / 'apksigner', 'verify', '--verbose', apk], 'verify')
     run([buildtools / 'zipalign', '-c', '-P', '16', '4', apk], 'verify-align')
     receipt = dict(apk=str(apk), apk_sha256=sha(apk.read_bytes()), native_sha256=sha(replacements[library]),
+                   **identity,
                    module_manifest_sha256=sha(replacements['assets/module-manifest.json']), shader_files=len(entries), shared_font_sha256=sha(font),
                    java_sources={str(p.relative_to(root)): sha(p.read_bytes()) for p in sources},
                    controller_symbols=font_report['controller_symbols'], message_files=message_files, messages=messages)
