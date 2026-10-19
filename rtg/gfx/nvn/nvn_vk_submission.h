@@ -48,6 +48,7 @@ typedef struct {
     int ncounter;
     int submission_cpu_readback,submission_event_wait;
 
+    VBuffer *composite_boundary; /* Submission-owned legacy-driver scratch. */
     VBuffer **temporaries;
     size_t temporary_capacity;
     int ntemporary;

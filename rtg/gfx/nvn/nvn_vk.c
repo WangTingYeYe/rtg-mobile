@@ -202,7 +202,7 @@ static struct {
     VShader shaders[LIMIT_OBJECTS]; int nshader; VTexture textures[LIMIT_OBJECTS]; int ntexture;
     uint32_t texture_used,texture_free_count,texture_free[LIMIT_OBJECTS],texture_table[2*LIMIT_OBJECTS];
     uint64_t texture_incarnation,registry_revision,pool_revision,binding_revision[6],ssbo_revision[6],texbind_revision[6],driver_revision[6][2];DriverCacheEntry driver_cache[6][2];
-    int disable_binding_plans,enable_command_cache;
+    int disable_binding_plans,enable_command_cache,legacy_adreno_composite;
     uint64_t profile_cmd_issued[NVN_VK_CMD_STATE_COUNT],profile_cmd_skipped[NVN_VK_CMD_STATE_COUNT];
     NvnDirtyQueryStats profile_dirty_base;
     uint64_t profile_plan_hits,profile_plan_misses,profile_plan_fallbacks,profile_plan_buffers,profile_plan_images,profile_driver_revision_hits;
@@ -434,6 +434,11 @@ static void backend_init(void) {
     vkGetPhysicalDeviceProperties2(G.physical,&properties2);
     if(private_driver && !strcmp(private_driver,"turnip") && driver_properties.driverID!=VK_DRIVER_ID_MESA_TURNIP)die("requested private driver was not loaded",driver_properties.driverID);
     fprintf(stderr,"[nvn-vulkan] driver id=%u name=%s info=%s\n",driver_properties.driverID,driver_properties.driverName,driver_properties.driverInfo);
+    /* Limit this workaround to the stock Adreno 630 driver exercised on the
+     * Mi 8; other driver revisions and Mesa Turnip are outside this evidence. */
+    G.legacy_adreno_composite=driver_properties.driverID==VK_DRIVER_ID_QUALCOMM_PROPRIETARY&&
+        !strcmp(G.properties.deviceName,"Adreno (TM) 630")&&G.properties.driverVersion==0x801f6000u;
+    if(G.legacy_adreno_composite)fprintf(stderr,"[nvn-vulkan] ADRENO_COMPOSITE_BOUNDARY driver_version=%#x\n",G.properties.driverVersion);
     fprintf(stderr,"[nvn-vulkan] subgroup size=%u stages=%#x operations=%#x\n",G.subgroup.subgroupSize,G.subgroup.supportedStages,G.subgroup.supportedOperations);
     vkGetPhysicalDeviceQueueFamilyProperties(G.physical,&n,NULL);
     VkQueueFamilyProperties *families=calloc(n,sizeof(*families)); if(!families) die("queue list",n);
@@ -1013,7 +1018,7 @@ static void sub_begin_ctx(VkSubmission *ctx) {
     }
     S.command=S.command_primary;S.chunk_index=0;S.chunk_mark=G.draws;G.seg_begin_ns=dm_android_nvn_clock_ns();
     S.phase=SUBMISSION_RECORDING;S.epoch=++G.recording_epoch;S.ticket=0;S.recorder=pthread_self();G.active=1;
-    S.nwrites=S.nevents=S.ntemporary=S.npipeline=S.npass=S.nread_snapshots=S.ndirect_reads=0;S.in_pass=0;
+    S.nwrites=S.nevents=S.ntemporary=S.npipeline=S.npass=S.nread_snapshots=S.ndirect_reads=0;S.in_pass=0;S.composite_boundary=NULL;
     S.pending_clear=0;S.flushing_clear=0;S.pass_discard=0;
     if(!G.present_count&&!attachment_ab_sequence)attachment_ab_poll(0);
     {int flags=atomic_load(&attachment_override);G.attachment_flags=flags<0?G.attachment_defaults:flags;atomic_store(&attachment_applied,G.attachment_flags);}
@@ -2455,6 +2460,28 @@ static void trace_mesh_range(const char *name,uint64_t address,uint64_t bytes) {
 static void command_bind_profile(unsigned kind,int issued) {
     if(issued)G.profile_cmd_issued[kind]++;else G.profile_cmd_skipped[kind]++;
 }
+/* The tested 2020 Adreno 630 driver corrupts sprite varyings when a draw
+ * samples a previously rendered color image. The image and bound uniforms
+ * read back correctly; isolated draws also pass. Ending the render pass or
+ * inserting ALL_COMMANDS / HOST / TRANSFER barriers alone does not fix it.
+ * A real transfer command before the composite does, including an unrelated
+ * four-byte update. Keep that driver workaround independent of game shaders,
+ * texture dimensions and content; never modify the sampled image or uniforms.
+ * The scratch allocation is owned by this submission until its fence retires. */
+static void legacy_adreno_composite_boundary(void) {
+    if(!G.legacy_adreno_composite)return;
+    int composite=0;
+    for(unsigned i=0;i<S.nimage_uses;i++)if(S.image_uses[i].roles&1u){
+        int found=0;uint32_t slot=texture_table_slot(S.image_uses[i].serial,&found);
+        if(!found)continue;
+        VTexture *t=&G.textures[G.texture_table[slot]-1];
+        if(!t->cpu_owned&&t->dirty_levels&&aspect(t->format)==VK_IMAGE_ASPECT_COLOR_BIT){composite=1;break;}
+    }
+    if(!composite)return;
+    all_barrier();
+    if(!S.composite_boundary)S.composite_boundary=temporary(4,VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    uint32_t zero=0;vkCmdUpdateBuffer(S.command,S.composite_boundary->b,0,sizeof zero,&zero);
+}
 static void draw(const p_draw *a,const p_draw_idx *idx) {
     if(!a&&!idx)die("draw parameters",0);
     int upper_left=atomic_load(&G.window_origin)==NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
@@ -2519,6 +2546,7 @@ static void draw(const p_draw *a,const p_draw_idx *idx) {
     prepare_sampling_copies(vs);prepare_sampling_copies(ps);prepare_comparison_images(vs);prepare_comparison_images(ps);
     G.profile_prep_ns+=prof_now()-bind_started;
     VkDescriptorSet descriptor_sets[2]={bind_shader(vs),ps?bind_shader(ps):VK_NULL_HANDLE};
+    legacy_adreno_composite_boundary();
     if(G.diag_fixed_desc){static VkDescriptorSet last_sets[2];static VShader *last_vs,*last_ps;static uint64_t last_epoch;
         if(last_epoch==S.epoch&&last_vs==vs&&last_ps==ps){descriptor_sets[0]=last_sets[0];descriptor_sets[1]=last_sets[1];}
         else{last_epoch=S.epoch;last_vs=vs;last_ps=ps;last_sets[0]=descriptor_sets[0];last_sets[1]=descriptor_sets[1];}}
