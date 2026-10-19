@@ -87,7 +87,7 @@ def main():
         if not had_marker:
             run('shell', 'run-as', package, 'rm', marker).check_returncode()
     faults = [line for line in log.splitlines() if re.search(
-        r'ANDROID_FATAL|FATAL EXCEPTION|\[softgarbage\]|Fatal signal|\[nvn-vulkan\] STOP', line)]
+        r'ANDROID_FATAL|FATAL EXCEPTION|\[softgarbage\]|Fatal signal|\[nvn-vulkan\] STOP|VALIDATION severity=0x1000', line)]
     started = 'ANDROID_GAME_STAGE 正在启动游戏' in log
     report = {'serial': args.serial, 'seconds_requested': args.seconds,
               'observed_pids': sorted(set(pids)), 'alive': alive,

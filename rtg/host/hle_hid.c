@@ -58,3 +58,38 @@ HLE_FORCE("_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_E
     if (received < 0) input_require(-received, "GetTouchScreenStates");
     return received;
 }
+
+// These bindings were shared by both platform branches before the Android-only
+// source cleanup. Keep them here: otherwise the original SDK reaches Horizon
+// HID IPC, including SetNpadJoyHoldType during the game's startup.
+HLE_FORCE("_ZN2nn3hid18SetNpadJoyHoldTypeENS0_15NpadJoyHoldTypeE", "Fixed host controller orientation", void, h_hid_SetJoyHold, int type) { (void)type; }
+HLE_FORCE("_ZN2nn3hid14DisconnectNpadERKj", "Logical touch controller remains attached", void, h_hid_Disconnect, const uint32_t *id) { (void)id; }
+HLE_FORCE("_ZN2nn3hid22GetNpadControllerColorEPNS0_19NpadControllerColorERKj", "Default logical controller color", uint64_t, h_hid_Color, void *out, const uint32_t *id) {
+    (void)id; if (out) memset(out, 0, 16); return 0;
+}
+HLE_FORCE("_ZN2nn3hid22GetNpadControllerColorEPNS0_19NpadControllerColorES2_RKj", "Default dual controller colors", uint64_t, h_hid_Color2, void *out, void *out2, const uint32_t *id) {
+    (void)id; if (out) memset(out, 0, 16); if (out2) memset(out2, 0, 16); return 0;
+}
+HLE_FORCE("_ZN2nn3hid20ControllerSupportArg10SetDefaultEv", "Initialize controller support arguments", void, h_hid_CtrlArgDflt, void *self) {
+    if (self) memset(self, 0, 0x48);
+}
+HLE_FORCE("_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_20ControllerSupportArgE", "Single logical touch controller support", uint64_t, h_hid_ShowCtrlSupport, void *out, const void *arg) {
+    (void)arg;
+    if (out) { memset(out, 0, 0x14); *(uint8_t *)out = 1; }
+    return 0;
+}
+HLE_FORCE("_ZN2nn3hid21ShowControllerSupportERKNS0_20ControllerSupportArgE", "Single logical touch controller support", void, h_hid_ShowCtrlSupport2, const void *arg) { (void)arg; }
+
+static int android_states_fill(dm_android_npad_state *states, int count, const uint32_t *id, uint32_t style) {
+    if (!id || count <= 0) return 0;
+    if (!states) die("GetNpadStates null output");
+    for (int i = 0; i < count; i++)
+        input_require(dm_android_input_read_npad(&states[i], *id, style), "GetNpadStates");
+    return count;
+}
+HLE_FORCE("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj", "Batch samples from Android FullKey input", int, h_hid_StatesFullKey, dm_android_npad_state *states, int count, const uint32_t *id) {
+    return android_states_fill(states, count, id, 1);
+}
+HLE_FORCE("_ZN2nn3hid13GetNpadStatesEPNS0_17NpadHandheldStateEiRKj", "Batch samples from Android Handheld input", int, h_hid_StatesHandheld, dm_android_npad_state *states, int count, const uint32_t *id) {
+    return android_states_fill(states, count, id, 2);
+}

@@ -44,6 +44,7 @@ cmake -S rtg/android -B build/android \
   -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29
 cmake --build build/android --parallel
+python3 tools/test_android_hid_bindings.py --native build/android/librtg_mobile_android.so
 
 # Python、C 和纯 JVM 回归，无需手机、SDK 或原版资源。
 python3 tools/run_checks.py
