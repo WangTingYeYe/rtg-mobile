@@ -1,0 +1,60 @@
+// Controller and touchscreen SDK bindings for the Android input backend.
+#include "hle.h"
+#include "../android/input_backend.h"
+#include "../android/vibration_backend.h"
+// This Android branch contains only SDK service bindings and the actual host
+// input backend. No game-version UI pumps, scripted taps, or fixed entry calls
+// from the Apple branch are compiled into it.
+static void input_require(int error, const char *operation) {
+    if (error) die("Android input %s failed error=%d (real host binding required)", operation, error);
+}
+HLE_FORCE("_ZN2nn3hid14InitializeNpadEv", "Android source binding/state initialization", void, h_hid_InitNpad, void) {
+    input_require(dm_android_input_initialize_npad(), "InitializeNpad");
+    LOG("ANDROID_HID InitializeNpad bound=true");
+}
+HLE_FORCE("_ZN2nn3hid21InitializeTouchScreenEv", "Android MotionEvent source binding/state initialization", void, h_hid_InitTouch, void) {
+    input_require(dm_android_input_initialize_touch(), "InitializeTouchScreen");
+    LOG("ANDROID_HID InitializeTouchScreen bound=true");
+}
+HLE_FORCE("_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm", "Store/validate IDs and filter logical input connection", void, h_hid_SetIds, const uint32_t *ids, uint64_t n) {
+    input_require(dm_android_input_set_ids(ids, (size_t)n), "SetSupportedNpadIdType");
+}
+HLE_FORCE("_ZN2nn3hid24SetSupportedNpadStyleSetENS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "Store requested styles and filter actual logical input source", void, h_hid_SetStyles, uint32_t styles) {
+    input_require(dm_android_input_set_styles(styles), "SetSupportedNpadStyleSet");
+}
+HLE_FORCE("_ZN2nn3hid29SetNpadHandheldActivationModeENS0_26NpadHandheldActivationModeE", "Store actual handheld attachment requirement", void, h_hid_SetHhMode, int mode) {
+    input_require(dm_android_input_set_handheld_mode(mode), "SetNpadHandheldActivationMode");
+}
+HLE_FORCE("_ZN2nn3hid15GetNpadStyleSetERKj", "Return only a bound/allowed logical input style", uint32_t, h_hid_GetStyle, const uint32_t *id) {
+    uint32_t style = 0; if (!id) die("GetNpadStyleSet null ID");
+    input_require(dm_android_input_get_style(*id, &style), "GetNpadStyleSet"); return style;
+}
+HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj", "Sample bound Android logical actions with press-edge latch", void, h_hid_GetFullKey, dm_android_npad_state *out, const uint32_t *id) {
+    if (!id) die("GetNpadState null ID");
+    input_require(dm_android_input_read_npad(out, *id, 1), "GetNpadFullKeyState");
+}
+HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj", "Sample bound Android logical actions with attachment/style filters", void, h_hid_GetHandheld, dm_android_npad_state *out, const uint32_t *id) {
+    if (!id) die("GetNpadState null ID");
+    input_require(dm_android_input_read_npad(out, *id, 2), "GetNpadHandheldState");
+}
+HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "Android physical vibrator availability", unsigned, h_hid_VibPermit, void) {
+    return dm_android_vibration_permitted();
+}
+HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "Connected logical pad rumble channels mapped to Android motor", int, h_hid_GetVibHandles, uint32_t *out, int capacity, const uint32_t *id, uint32_t style) {
+    if (!id) die("Invalid vibration-device enumeration");
+    uint32_t connected=0;input_require(dm_android_input_get_style(*id,&connected), "vibration pad style");
+    int n=dm_android_vibration_handles(out,capacity,*id,style&connected);
+    if(n<0)die("Invalid vibration-device enumeration error=%d",-n);
+    return n;
+}
+HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "Initialize real Android rumble route", void, h_hid_InitVib, const uint32_t *handle) {
+    if(!handle||dm_android_vibration_initialize(*handle))LOG("WARN invalid vibration initialization");
+}
+HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "Queue game rumble without Android Binder work on game thread", void, h_hid_SendVib, const uint32_t *handle, const dm_vibration_value *value) {
+    if(!handle||dm_android_vibration_send(*handle,value))LOG("WARN invalid vibration value/handle");
+}
+HLE_FORCE("_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_EEEi", "Read real Android multi-pointer input with Start/End latch", int, h_hid_GetTouch, void *out, int capacity) {
+    int received = dm_android_input_read_touch(out, capacity);
+    if (received < 0) input_require(-received, "GetTouchScreenStates");
+    return received;
+}

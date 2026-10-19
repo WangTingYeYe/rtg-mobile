@@ -1,0 +1,42 @@
+name: Source checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  checks:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: python3 tools/check_public_tree.py --staged
+      - run: python3 tools/run_checks.py
+      - name: Linux concurrency and filesystem regressions
+        if: runner.os == 'Linux'
+        run: |
+          python3 rtg/android/tests/run_merge_checks.py --output build/linux-host
+          python3 rtg/android/tests/run_translation_checks.py --output build/linux-queue
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install NDK
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.1.12297006"'
+      - name: Build native code without game files
+        run: |
+          cmake -S rtg/android -B build/android \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/27.1.12297006/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29
+          cmake --build build/android --parallel 2
