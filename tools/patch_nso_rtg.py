@@ -85,6 +85,19 @@ for off, ob, nb, why, scope in cuts:
     ob, nb = bytes.fromhex(ob), bytes.fromhex(nb)
     assert len(ob) == len(nb) and IMG[off:off + len(ob)] == ob, f'剪口原字节不符 {off:#x}：{bytes(IMG[off:off + len(ob)]).hex()}'
     IMG[off:off + len(nb)] = nb
+# The title-menu narration dialog updates the in-memory save on confirmation,
+# but does not submit it to the save worker. Persist changed, confirmed choices
+# through the game's own snapshot/write/commit path before returning to the menu.
+# Cancel restores the entry value and must not submit a save.
+NARRATION_SAVE = ANDROID and NAME == 'main' and BUILD_ID == '03ff4a3bec96bde3a2e37ce3aa4caa0c'
+if NARRATION_SAVE:
+    for off, expected in (
+        (0x2142b8, '88d27339099e87521f010071889f87522811889a606a68b82c280b94'),
+        (0x4de380, 'c8450090e103002a082d40f9e00308aa2496ec17'),
+        (0x3d60, 'fd7bbea9f44f01a9fd030091f30300aa'),
+        (0x3dd0, 'fd7bbea9f30b00f9fd030091f30300aa'),
+    ):
+        assert IMG[off:off + len(expected) // 2] == bytes.fromhex(expected), f'Narration save ABI changed at {off:#x}'
 # 键页下标固定；键页内容由装载器写入“实际键号 × 8”。
 # Key page indices are fixed; the key page content is written by the loader as "actual key number × 8".
 KEYS = {'K18': 508, 'KTLS': 509, 'KTLR': 510, 'KGATE': 511, 'KRES0': 506, 'KRES1': 507, 'KASPECT': 505, 'KASPECTUI': 504}   # KRES*：分辨率参数位；KASPECT：画面宽高比上限（见 PARAMS） | KRES*: resolution parameter slots; KASPECT: picture aspect ratio cap (see PARAMS)
@@ -616,6 +629,30 @@ for off, oid, ow, why in obs:
     assert off in set(starts) or (oid == 6 and off == 0x43ecc8), f'private obs point not approved {off:#x}'
     assert off < TEXT_END and off not in kinds and not any(lo <= off < hi for wseg in windows for lo, hi in [(wseg[0].address, wseg[-1].address + 4)]), f'观测门与改写点冲突 {off:#x}'
     put_branch(off, site_obs(off, oid, w)); stat('obs')
+
+if NARRATION_SAVE:
+    off = 0x2142d0
+    original = bytes(IMG[off:off + 4])
+    start = here()
+    emit(STP_PRE(29, 30, 31, -32)); emit(ADDI(29, 31, 0))
+    emit(0xB97CFE68)  # ldr w8, [x19, #0x3cfc]: value on entering the dialog
+    emit(0x4A000108)  # eor w8, w8, w0: selected value differs from entry value
+    emit(0xB90013E8)  # str w8, [sp, #16]
+    emit(B(here(), 0x4de380) | 0x80000000)  # original narration setter
+    emit(0xB94013E8)  # ldr w8, [sp, #16]
+    skip = here(); emit(0)  # cbz w8, done (cancel / unchanged selection)
+    # Drain any existing save before reusing its snapshot buffer. Drain our save
+    # too, so a process kill immediately after returning cannot lose the choice.
+    for target in (0x3dd0, 0x3d60, 0x3dd0):
+        emit(ADRP(0, here(), 0x10a75f0)); emit(ADDI(0, 0, 0x5f0))
+        if target == 0x3d60: emit(0x52800021)  # mov w1, #1 (normal save counter)
+        emit(B(here(), target) | 0x80000000)
+    struct.pack_into('<I', patch, skip - PATCH_OFF, 0x34000008 | (((here() - skip) // 4) << 5))
+    emit(LDP_POST(29, 30, 31, 32)); emit(0xD65F03C0)
+    struct.pack_into('<I', IMG, off, B(off, start) | 0x80000000)
+    cuts.append((off, original.hex(), bytes(IMG[off:off + 4]).hex(),
+                 'Persist confirmed narration changes with the original save worker and commit', 'Android'))
+    stat('narration_save')
 
 os.makedirs(outdir, exist_ok=True)
 P = lambda ext: os.path.join(outdir, f'{NAME}.{ext}')

@@ -154,6 +154,15 @@ adb shell am start -n org.rhythmtengoku.mobile/.GameActivity
 
 存档位于应用私有目录 `files/rhythm-tengoku/save/`。更新应使用同一密钥；换签名导致无法覆盖安装时，先备份存档，不要直接卸载或清除应用数据。
 
+开始菜单中的朗读设置在按 A 确认变更后，通过游戏原有保存流程提交；按 B 取消不保存。此修复位于模块改写器，已有本地模块需要重新运行 `patch_nso_rtg.py` 生成 `main` 后再打包。选择“不朗读”、按 A 并等到返回开始菜单后，可检查设置落盘和重启后的保留情况：
+
+```sh
+python3 tools/check_android_narration_persistence.py --serial <设备序列号> \
+  --expected-mode 0 --restart --output run/narration-persistence
+```
+
+`0/1/2` 分别为“不朗读 / 朗读 / 尽情朗读”。该检查只验证已提交存档；重启后仍需进入朗读设置核对选项，并验证菜单实际声音。
+
 设备测量入口：`tools/check_android_startup.py`、`tools/check_android_frame_pacing.py`、`tools/check_android_audio.py`。先查看各自 `--help`；这些命令会操作指定设备并将日志、截图或音频写入本地输出目录，结果不要直接提交。
 
 ## 贡献与公开提交
