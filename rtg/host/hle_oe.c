@@ -117,10 +117,21 @@ HLE_FORCE("_ZN2nn2oe17DisableScreenShotEv", "截图许可策略", void, h_oe_Dis
 #endif
 }
 
-// OperationMode：0 Handheld、1 Console；PerformanceMode：0 Normal、1 Boost（与运行模式一一对应）
-// OperationMode: 0 Handheld, 1 Console; PerformanceMode: 0 Normal, 1 Boost (one-to-one with the operation mode)
+// OperationMode: 0 Handheld, 1 Console; PerformanceMode: 0 Normal, 1 Boost.
+// Android keeps handheld input semantics but uses RTG's high-resolution profile.
 HLE_FORCE("_ZN2nn2oe16GetOperationModeEv", "运行模式查询；按 DM_OPMODE 给固定值", int, h_oe_GetOpMode, void) { int u = g_ui_opmode; if (atomic_exchange(&g_ui_armed, 0)) atomic_fetch_add(&g_ui_reads, 1); return u >= 0 ? u : opmode(); }
-HLE_FORCE("_ZN2nn2oe18GetPerformanceModeEv", "性能模式查询；与运行模式一致", int, h_oe_GetPerfMode, void) { return opmode(); }
+HLE_FORCE("_ZN2nn2oe18GetPerformanceModeEv", "性能模式查询", int, h_oe_GetPerfMode, void) {
+#ifdef __ANDROID__
+    /* RTG's Normal profile rasterizes the menu at 666x600 and the scene at
+     * 1280x720, then enlarges to its 1920x1080 output with nearest filtering.
+     * Boost allocates 1000x900 / 1920x1080 targets and removes that upscale.
+     * Only report the guest render profile here: changing OperationMode also
+     * changes controller semantics. Android still owns CPU/GPU clock policy. */
+    return getenv("DM_ANDROID_HANDHELD_RENDER") ? 0 : 1;
+#else
+    return opmode();
+#endif
+}
 HLE_FORCE("_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi", "设 CPU/GPU 频率档；宿主不调频", void, h_oe_SetPerfCfg, int mode, int cfg) {
 #ifdef __ANDROID__
     if (mode < 0 || mode > 1) die("Invalid Android guest performance profile");

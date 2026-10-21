@@ -17,8 +17,6 @@ import android.view.View;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.TextView;
-import android.widget.Button;
-import android.content.res.ColorStateList;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -39,6 +37,7 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
     private static native int nativeStart();
     private static native void nativeVsync(long frameTimeNanos);
     private static native String nativeStatus();
+    private static native long nativeTouchHint();
     private static native String nativeKeyboardRequest();
     private static native void nativeKeyboardResult(long id,boolean accepted,String text);
     private static native void nativeKeyboardReady(boolean ready);
@@ -58,7 +57,9 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
     private final Choreographer.FrameCallback vsyncCallback=new Choreographer.FrameCallback(){
         @Override public void doFrame(long frameTimeNanos){
             if(!resumed||destroyed||failed)return;
-            nativeVsync(frameTimeNanos);Choreographer.getInstance().postFrameCallback(this);
+            nativeVsync(frameTimeNanos);
+            if(touchControls!=null)touchControls.applyHint(nativeTouchHint());
+            Choreographer.getInstance().postFrameCallback(this);
         }
     };
     private RendererSettingsDialog rendererSettings;
@@ -112,17 +113,6 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         // Use the full screen for rhythm input, including the side gutters;
         // the original game image stays in its unchanged 16:9 viewport.
         root.addView(touchControls,new FrameLayout.LayoutParams(-1,-1));
-        Button system=new Button(this);system.setText("设置");system.setContentDescription("触控与系统设置");system.setTextColor(TouchControlsView.TEXT);system.setTextSize(13);
-        system.setPadding(0,0,0,0);
-        android.graphics.drawable.GradientDrawable systemBackground=new android.graphics.drawable.GradientDrawable();
-        systemBackground.setColor(0x50161d2b);systemBackground.setCornerRadius(dp(8));
-        system.setBackground(systemBackground);
-        FrameLayout.LayoutParams systemParams=new FrameLayout.LayoutParams(dp(64),dp(48),Gravity.RIGHT|Gravity.TOP);
-        systemParams.topMargin=dp(4);systemParams.rightMargin=dp(4);
-        system.setOnClickListener(v->{if(!configured||failed||rendererSettings!=null||keyboardDialog!=null)return;
-            touchControls.cancel();clearBackButtons();
-            rendererSettings=RendererSettingsDialog.show(this,appliedRendererFlags,touchControls,system,()->rendererSettings=null);});
-        root.addView(system,systemParams);
         showFps=new File(getFilesDir(),"rhythm-tengoku/diagnostics/show-fps").exists();
         fps=new TextView(this);fps.setText("FPS —");fps.setTextColor(TouchControlsView.TEXT);
         fps.setVisibility(showFps?View.VISIBLE:View.GONE);
@@ -133,7 +123,6 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         fpsParams.bottomMargin=dp(8);root.addView(fps,fpsParams);
         root.setOnApplyWindowInsetsListener((v,insets)->{
             android.graphics.Insets safe=TouchControlsView.safeInsets(insets);
-            systemParams.topMargin=dp(4);systemParams.rightMargin=dp(4);system.setLayoutParams(systemParams);
             fpsParams.bottomMargin=dp(8)+safe.bottom;fps.setLayoutParams(fpsParams);
             fps.setTranslationX((safe.left-safe.right)/2f);
             return insets;

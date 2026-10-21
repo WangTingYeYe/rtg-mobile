@@ -8,9 +8,11 @@
 
 - Android 10 / API 29 及以上，`arm64-v8a`，图形路径使用 Vulkan 1.1。
 - 游戏内容以 60 Hz 为基准；优先请求同分辨率 120/60 Hz 显示模式，**不代表游戏以 120 FPS 运行**。
-- 左侧方向控制，右侧 A 区域支持按下、长按和松开；独立 B、Y、−、+，可展开 X/L/R/ZL/ZR，支持多点触控与透明度设置。
-- 已有音频混音、手柄图标字体补全、震动和存档路径；失焦及切后台时释放输入。
-- 真机兼容性仍在验证。菜单和已测关卡可接近 60 FPS，场景切换仍可能有长帧；不保证全关卡稳定帧率、所有 GPU 正确显示或固定功耗。
+- 触控采用 Touchable 的 rhythm 布局：右半屏 A，左侧按键随当前关卡自动切换为单击、左右两键或四向区；左下小十字与侧边栏 B、−、+，Y/X 按关卡显示，支持多点触控与透明度设置。
+- 按键使用自绘液态玻璃样式；画面保持原比例居中，左右/上下黑边由 Vulkan 呈现路径绘制整幅画面的模糊环境背景（64×36 光照图、跨帧平滑、外缘羽化）。
+- 已有音频混音、手柄图标字体补全、存档路径；震动按 Switch 左右马达的低/高频段能量合并为强度与锐度，Android 以 256 级振幅和锐度包络输出；失焦及切后台时释放输入。
+- 默认使用游戏的高分辨率渲染档：主画面 1920×1080，开始菜单文字层 1000×900，去掉原来的 720p → 1080p 放大；掌机输入模式保持不变。高分辨率会增加 GPU 开销，不能保证所有场景达到 60 FPS。
+- 真机兼容性仍在验证。已测关卡片段可接近 60 FPS；华为 ALN-AL80 本轮短测中，高清开始菜单约 39 FPS，同构建低清档约 51 FPS。场景切换仍可能有长帧；不保证全关卡稳定帧率、所有 GPU 正确显示或固定功耗。
 - 小米 8（LineageOS Android 15、Adreno 630 驱动 `0x801f6000`）已针对菜单合成闪烁加入兼容处理；实机验证覆盖启动、开始菜单、选关和首关教程，尚未覆盖全部关卡。
 - 当前是开发版：应用启用 `debuggable`，没有面向最终用户的游戏资源导入向导。不提供 iOS/macOS 运行目标。
 
@@ -20,9 +22,9 @@
 
 | 路径 | 内容 |
 | --- | --- |
-| `rtg/android/` | Android 外壳、JNI、音频、输入、震动、线程与文件服务 |
+| `rtg/android/` | Android 外壳、JNI、音频、输入、自适应触控提示、震动、线程与文件服务 |
 | `rtg/host/` | 模块装载、AArch64 调用门和系统服务兼容层 |
-| `rtg/gfx/nvn/` | NVN 接口、命令记录与 Vulkan 后端 |
+| `rtg/gfx/nvn/` | NVN 接口、命令记录、Vulkan 后端与黑边光效 |
 | `rtg/gfx/tex/` | Tegra 纹理解排布、BC 解码与预解码缓存 |
 | `rtg/gfx/tools/dmsh_xlate/` | 基于 Ryujinx 的离线着色器翻译器 |
 | `rtg/third_party/` | 保留原许可证的第三方源码 |
@@ -106,6 +108,12 @@ python tools/build_rtg_vulkan.py \
   --spirv-cross /path/to/spirv-cross
 ```
 
+黑边光效使用的内置 SPIR-V 已生成在 `rtg/gfx/nvn/nvn_vk_ambient_spv.h`，日常构建不需要着色器编译器。只有修改 `rtg/gfx/nvn/ambient/` 下的 GLSL 后才需要 `glslangValidator` 并重新生成：
+
+```sh
+python3 tools/build_ambient_shaders.py
+```
+
 字体必须由自己提供，具有 TrueType `glyf` 轮廓、2048 units/em，并覆盖所需语言及构建器要求的基础符号。构建器补充控制器图标，读取本地 `RomFS/mesg` 校验覆盖。字体及派生字体的使用、分发条件以原字体许可证为准，仓库不包含字体。
 
 ```sh
@@ -164,6 +172,16 @@ python3 tools/check_android_narration_persistence.py --serial <设备序列号> 
 `0/1/2` 分别为“不朗读 / 朗读 / 尽情朗读”。该检查只验证已提交存档；重启后仍需进入朗读设置核对选项，并验证菜单实际声音。
 
 设备测量入口：`tools/check_android_startup.py`、`tools/check_android_frame_pacing.py`、`tools/check_android_audio.py`。先查看各自 `--help`；这些命令会操作指定设备并将日志、截图或音频写入本地输出目录，结果不要直接提交。
+
+文字清晰度回归：在游戏的**开始菜单**（包含“单人游玩”的列表）执行以下命令。它抓取一帧 Vulkan 诊断，验证文字层尺寸和最终复制没有再次放大；通过后仍需看截图并另外测量帧率、音频和生命周期。
+
+```sh
+python3 tools/check_android_ui_resolution.py --serial <设备序列号> --output run/ui-resolution
+```
+
+如需在同一个构建上对照原来的低清档，在应用私有 `files/rhythm-tengoku/diagnostics/` 创建 `handheld-render-profile` 文件并重新启动；删除文件、重启后恢复默认高清档。该开关只改变游戏渲染档，不改变 Android 的 CPU/GPU 调频策略。
+
+黑边光效默认强度为 `0.8`。在同一诊断目录放入 `ambient-bars.txt`（内容为 `0`–`1` 的数字，`0` 关闭）可调整；超出范围或格式错误的文件会被忽略并记录。游戏画面本身不参与该效果的绘制。
 
 ## 贡献与公开提交
 

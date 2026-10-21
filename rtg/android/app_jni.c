@@ -25,6 +25,8 @@ extern uint32_t svc_thread_main_init(void);
 extern int dm_android_diagnostics_flush(void);
 extern void dm_vk_set_shader_root(const char *);
 extern void dm_vk_set_window(void *);
+extern void dm_android_touch_hint_install(void);
+extern uint64_t dm_android_touch_hint_get(void);
 extern void dm_vk_set_display_hz(int);
 extern int dm_vk_attachment_applied_flags(void);
 extern void dm_gfx_suspend(int);
@@ -44,14 +46,14 @@ static char report_file[PATH_MAX], report_temp[PATH_MAX];
 static void path(char *out, size_t cap, const char *base, const char *leaf) {
     if (snprintf(out, cap, "%s/%s", base, leaf) >= (int)cap) die("Android private path too long");
 }
-/* A fixed scale is an explicit diagnostic experiment. An absent marker keeps
- * the original 1.0 scale; reject truncated values, NaN/Inf, and extra tokens. */
-static int configure_render_scale(void) {
-    char marker[PATH_MAX], text[64], value[32];
-    path(marker,sizeof marker,port_root,"diagnostics/render-scale.txt");
-    unsetenv("DM_3D_SCALE");
+/* Read one diagnostics float in port_root/diagnostics/<leaf>. Returns 0 when
+ * the file is absent, 1 when valid, or a positive errno when the file exists
+ * but cannot be read/parsed. Truncated values, NaN/Inf and extra tokens fail. */
+static int diagnostics_float(const char *leaf,float minimum,float maximum,float *out) {
+    char marker[PATH_MAX], text[64];
+    path(marker,sizeof marker,port_root,leaf);
     FILE *f=fopen(marker,"r");
-    if (!f) return errno==ENOENT?0:errno;
+    if (!f) {int e=errno;return e==ENOENT?0:e;}
     size_t n=fread(text,1,sizeof text-1,f);
     int error=ferror(f)?EIO:0;
     int trailing=fgetc(f);
@@ -62,10 +64,20 @@ static int configure_render_scale(void) {
     text[n]='\0';
     char *start=text, *end;
     while (isspace((unsigned char)*start)) start++;
-    errno=0; float scale=strtof(start,&end);
-    if (end==start || errno==ERANGE || !isfinite(scale) || scale<0.70f || scale>1.0f) return EINVAL;
+    errno=0; float value=strtof(start,&end);
+    if (end==start || errno==ERANGE || !isfinite(value) || value<minimum || value>maximum) return EINVAL;
     while (isspace((unsigned char)*end)) end++;
     if (*end) return EINVAL;
+    *out=value;return 1;
+}
+/* A fixed scale is an explicit diagnostic experiment. An absent marker keeps
+ * the original 1.0 scale. */
+static int configure_render_scale(void) {
+    char value[32];
+    unsetenv("DM_3D_SCALE");
+    float scale;
+    int rc=diagnostics_float("diagnostics/render-scale.txt",0.70f,1.0f,&scale);
+    if (rc!=1) return rc==0?0:rc;
     snprintf(value,sizeof value,"%.9g",(double)scale);
     return setenv("DM_3D_SCALE",value,1)?errno:0;
 }
@@ -318,6 +330,10 @@ JNIEXPORT jint JNICALL Java_org_rhythmtengoku_mobile_GameActivity_nativeConfigur
       } }
     if ((rc=configure_render_scale())) { LOG("ANDROID_3D_SCALE_CONFIG_FAILED errno=%d expected finite 0.70..1.0",rc); return rc; }
     char driver_option[PATH_MAX];
+    /* Diagnostic A/B fallback; leave controller operation mode independent. */
+    unsetenv("DM_ANDROID_HANDHELD_RENDER");
+    path(driver_option,sizeof driver_option,port_root,"diagnostics/handheld-render-profile");
+    if(access(driver_option,F_OK)==0)setenv("DM_ANDROID_HANDHELD_RENDER","1",1);
     unsetenv("DM_RUNTIME_DIAGNOSTICS");
     path(driver_option,sizeof driver_option,port_root,"diagnostics/runtime-diagnostics");
     if(access(driver_option,F_OK)==0)setenv("DM_RUNTIME_DIAGNOSTICS","1",1);
@@ -514,8 +530,19 @@ JNIEXPORT jint JNICALL Java_org_rhythmtengoku_mobile_GameActivity_nativeConfigur
     path(driver_option,sizeof driver_option,port_root,"diagnostics/verbose-host");
     g_flag.fs=g_flag.svc=g_flag.dbg=g_flag.thr=access(driver_option,F_OK)==0;
     path(shaders,sizeof shaders,port_root,"shaders"); dm_vk_set_shader_root(shaders);
+    /* Touchable's Rhythm Heaven profile uses 0.8. A diagnostics file may set
+     * 0..1; 0 turns the ambient border off. */
+    setenv("DM_NVN_AMBIENT_BARS","0.8",0);
+    float ambient_gain;
+    int ambient_rc=diagnostics_float("diagnostics/ambient-bars.txt",0.0f,1.0f,&ambient_gain);
+    if (ambient_rc==1) {char value[16];snprintf(value,sizeof value,"%.3f",(double)ambient_gain);setenv("DM_NVN_AMBIENT_BARS",value,1);}
+    else if (ambient_rc>0) LOG("ANDROID_AMBIENT_INVALID expected 0..1 errno=%d",ambient_rc);
+    dm_android_touch_hint_install();
     LOG("ANDROID_HOST app_uid=%u min_api=29 original_modules=3 selected_addons=0 no_CPU_interpreter",getuid());
     return 0;
+}
+JNIEXPORT jlong JNICALL Java_org_rhythmtengoku_mobile_GameActivity_nativeTouchHint(JNIEnv *env,jclass cls) {
+    (void)env;(void)cls;return (jlong)dm_android_touch_hint_get();
 }
 JNIEXPORT void JNICALL Java_org_rhythmtengoku_mobile_GameActivity_nativeVsync(JNIEnv *env,jclass cls,jlong stamp) {
     (void)env;(void)cls;dm_android_nvn_vsync(stamp>0?(uint64_t)stamp:0);

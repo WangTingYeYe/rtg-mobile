@@ -32,6 +32,10 @@
 #endif
 #include <sys/xattr.h>
 
+// 前端（安卓触控提示）读取游戏打开的路径：只对读方式打开的客体路径调用，失败也不影响解析。
+// The front end (Android touch hints) reads the paths the game opens: called only for guest paths opened for reading, and a failure never affects resolution.
+__attribute__((weak)) void (*g_dm_fs_open_hook)(const char *path);
+
 #define RES_PATH_NOT_FOUND 0x202u      // fs 模块 2，描述 1 | fs module 2, description 1
 #define RES_PATH_EXISTS    0x402u      // fs 模块 2，描述 2 | fs module 2, description 2
 enum { MODE_READ = 1, MODE_WRITE = 2, MODE_APPEND = 4 };
@@ -720,6 +724,7 @@ HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Re
     LOG("[fs-open-debug] path=%s mode=%d", path ? path : "(null)", mode);   // v22G：挪到 HP 之前——HP 对无冒号路径 ENOENT 静默失败，此前日志在 HP 之后永远看不到
 #endif
     HP(path);
+    if (g_dm_fs_open_hook && !(mode & (MODE_WRITE | MODE_APPEND))) g_dm_fs_open_hook(path);
 #ifdef __ANDROID__
     if (!out || !(mode & (MODE_READ | MODE_WRITE)) || (mode & ~(MODE_READ | MODE_WRITE | MODE_APPEND))) return RES_FAIL;
 #endif
