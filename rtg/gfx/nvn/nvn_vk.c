@@ -3135,6 +3135,7 @@ void mtl_sub_index(const uint64_t *handles,int n) {
 }
 
 static void swapchain_destroy_locked(void);
+static int swap_color_attachment;
 void dm_vk_set_window(void *native) {
     mtl_init();pthread_mutex_lock(&G.lock);async_drain_locked();CHECK(cpu_work_queue_idle(G.queue));
     /* Focus/resume notifications may publish the same BufferQueue again.
@@ -3159,6 +3160,7 @@ static void swapchain_make(void) {
     VkBool32 supported=0;CHECK(vkGetPhysicalDeviceSurfaceSupportKHR(G.physical,G.family,G.surface,&supported));if(!supported)die("queue surface support",0);
     VkSurfaceCapabilitiesKHR caps;CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(G.physical,G.surface,&caps));
     if(!(caps.supportedUsageFlags&VK_IMAGE_USAGE_TRANSFER_DST_BIT))die("swapchain transfer usage",caps.supportedUsageFlags);
+    swap_color_attachment=(caps.supportedUsageFlags&VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)!=0;
     uint32_t n=0;CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(G.physical,G.surface,&n,NULL));if(!n)die("surface formats",0);
     VkSurfaceFormatKHR *formats=calloc(n,sizeof(*formats));if(!formats)die("surface format allocation",n);
     CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(G.physical,G.surface,&n,formats));VkSurfaceFormatKHR chosen=formats[0];
@@ -3170,7 +3172,8 @@ static void swapchain_make(void) {
     if(!(caps.supportedCompositeAlpha&alpha))die("surface composite alpha",caps.supportedCompositeAlpha);
     VkSwapchainCreateInfoKHR i={.sType=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,.surface=G.surface,.minImageCount=count,
       .imageFormat=chosen.format,.imageColorSpace=chosen.colorSpace,.imageExtent=G.swap_extent,.imageArrayLayers=1,
-      .imageUsage=VK_IMAGE_USAGE_TRANSFER_DST_BIT,.imageSharingMode=VK_SHARING_MODE_EXCLUSIVE,.preTransform=caps.supportedTransforms&VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR?VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR:caps.currentTransform,
+      .imageUsage=VK_IMAGE_USAGE_TRANSFER_DST_BIT|(caps.supportedUsageFlags&VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT),
+      .imageSharingMode=VK_SHARING_MODE_EXCLUSIVE,.preTransform=caps.supportedTransforms&VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR?VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR:caps.currentTransform,
       .compositeAlpha=alpha,.presentMode=VK_PRESENT_MODE_FIFO_KHR,.clipped=VK_TRUE};CHECK(vkCreateSwapchainKHR(G.device,&i,NULL,&G.swapchain));
     CHECK(vkGetSwapchainImagesKHR(G.device,G.swapchain,&G.nswap,NULL));if(!G.nswap)die("swapchain has no images",0);
     free(G.swap_images);free(G.swap_layouts);
@@ -3181,7 +3184,9 @@ static void swapchain_make(void) {
     VkSemaphoreCreateInfo sem_info={.sType=VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     for(uint32_t k=0;k<G.nswap;k++)CHECK(vkCreateSemaphore(G.device,&sem_info,NULL,&G.swap_finished[k]));
 }
+#include "nvn_vk_ambient.inc"
 static void swapchain_destroy_locked(void) {
+    ambient_swapchain_reset();
     for(uint32_t k=0;k<G.nswap&&k<16;k++)if(G.swap_finished[k]){vkDestroySemaphore(G.device,G.swap_finished[k],NULL);G.swap_finished[k]=VK_NULL_HANDLE;}
     if(G.swapchain)vkDestroySwapchainKHR(G.device,G.swapchain,NULL);G.swapchain=VK_NULL_HANDLE;G.nswap=0;
 }
@@ -3208,6 +3213,21 @@ uint64_t mtl_present(const tex_t *source,double period,const int crop[4]) {
     dm_android_nvn_work_wait_end(acquire_wait);G.pres_acq_ns+=dm_android_nvn_clock_ns()-present_started;
     if(acquired!=VK_SUCCESS && acquired!=VK_SUBOPTIMAL_KHR)die("swapchain acquisition",acquired);
     VkSemaphore finished=G.swap_finished[index];
+    int x=0,y=0,w=t->width,h=t->height;if(crop && crop[2]>0 && crop[3]>0){x=crop[0];y=crop[1];w=crop[2];h=crop[3];}
+    if(x<0||y<0||w<=0||h<=0||(uint64_t)x+w>t->width||(uint64_t)y+h>t->height)die("present crop bounds",w);
+    /* The full-window surface keeps the picture at its source aspect and lets
+     * the ambient pass fill the bars. Touch layout uses the same rectangle. */
+    int source_crop[4]={x,y,w,h},picture[4];
+    ambient_picture_rect((uint32_t)w,(uint32_t)h,G.swap_extent,picture);
+    int letterbox=picture[0]>0||picture[1]>0||picture[2]!=(int)G.swap_extent.width||picture[3]!=(int)G.swap_extent.height;
+    int flip=atomic_load(&G.window_origin)==NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT;
+    ambient_build();
+    VkRect2D ambient_rects[4];
+    int ambient_bars=0;
+    if(ambient.enabled&&ambient.ready&&letterbox){
+        texture_transition(t,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        ambient_bars=ambient_prepare(S.command,t,source_crop,index,picture,ambient_rects,flip,dm_android_nvn_clock_ns());
+    }
     texture_transition(t,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     VkImageMemoryBarrier barrier={.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,.oldLayout=G.swap_layouts[index],
        .newLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
@@ -3215,14 +3235,16 @@ uint64_t mtl_present(const tex_t *source,double period,const int crop[4]) {
     /* Chain the layout transition to the acquire semaphore's TRANSFER wait.
      * TOP_OF_PIPE lets the transition race the presentation engine's read. */
     vkCmdPipelineBarrier(S.command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,NULL,0,NULL,1,&barrier);
-    int x=0,y=0,w=t->width,h=t->height;if(crop && crop[2]>0 && crop[3]>0){x=crop[0];y=crop[1];w=crop[2];h=crop[3];}
-    if(x<0||y<0||w<=0||h<=0||(uint64_t)x+w>t->width||(uint64_t)y+h>t->height)die("present crop bounds",w);
+    /* The bar pass writes every letterbox pixel opaquely, so only a build
+     * without ambient bars needs the black clear. */
+    if(letterbox&&!ambient_bars){VkClearColorValue black={{0,0,0,1}};VkImageSubresourceRange range={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+        vkCmdClearColorImage(S.command,G.swap_images[index],VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&black,1,&range);}
     VkImageBlit blit={.srcSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1},.srcOffsets={{x,y,0},{x+w,y+h,1}},
-      .dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1},.dstOffsets={{0,0,0},{(int)G.swap_extent.width,(int)G.swap_extent.height,1}}};
+      .dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1},.dstOffsets={{picture[0],picture[1],0},{picture[0]+picture[2],picture[1]+picture[3],1}}};
     /* NVN lower-left images retain guest row order throughout offscreen passes.
      * Convert once at the Android surface boundary; flipping each draw would
      * invert sampled render targets again (text panels versus direct sprites). */
-    if(atomic_load(&G.window_origin)==NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT){
+    if(flip){
         blit.srcOffsets[0].y=y+h;blit.srcOffsets[1].y=y;
     }
     VkFormatProperties src_format,dst_format;vkGetPhysicalDeviceFormatProperties(G.physical,t->format,&src_format);
@@ -3230,9 +3252,20 @@ uint64_t mtl_present(const tex_t *source,double period,const int crop[4]) {
     if(!(src_format.optimalTilingFeatures&VK_FORMAT_FEATURE_BLIT_SRC_BIT)||!(dst_format.optimalTilingFeatures&VK_FORMAT_FEATURE_BLIT_DST_BIT))die("present blit formats",t->format);
     vkCmdBlitImage(S.command,t->image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,G.swap_images[index],VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&blit,
        src_format.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT?VK_FILTER_LINEAR:VK_FILTER_NEAREST);
-    barrier.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;barrier.newLayout=VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    barrier.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;barrier.dstAccessMask=0;
-    vkCmdPipelineBarrier(S.command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,0,0,NULL,0,NULL,1,&barrier);
+    if(ambient_bars){
+        barrier.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;barrier.newLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_READ_BIT|VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(S.command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,0,0,NULL,0,NULL,1,&barrier);
+        ambient_draw(S.command,index,picture,ambient_rects,ambient_bars);
+        barrier.oldLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;barrier.newLayout=VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        barrier.srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;barrier.dstAccessMask=0;
+        vkCmdPipelineBarrier(S.command,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,0,0,NULL,0,NULL,1,&barrier);
+    }else{
+        barrier.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;barrier.newLayout=VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        barrier.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;barrier.dstAccessMask=0;
+        vkCmdPipelineBarrier(S.command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,0,0,NULL,0,NULL,1,&barrier);
+    }
     G.swap_layouts[index]=VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;CHECK(vkEndCommandBuffer(S.command));
     VkPipelineStageFlags wait_stage=VK_PIPELINE_STAGE_TRANSFER_BIT;VkSubmitInfo si={.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO,.waitSemaphoreCount=1,
       .pWaitSemaphores=&available,.pWaitDstStageMask=&wait_stage,.commandBufferCount=1,.pCommandBuffers=&S.command,

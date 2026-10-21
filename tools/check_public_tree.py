@@ -16,7 +16,7 @@ LOCAL_DIRS = {'game', 'build', 'run', '.local', '.claude', '.codex', '.venv',
               'venv', '__pycache__', 'romfs', 'exefs', 'save', 'saves',
               'node_modules', 'bin', 'obj', 'cmakefiles'}
 TEXT_SUFFIXES = {'.c', '.h', '.s', '.inc', '.py', '.java', '.cs', '.csproj',
-                 '.glsl', '.props', '.targets', '.md', '.txt', '.xml', '.json', '.tsv',
+                 '.glsl', '.vert', '.frag', '.props', '.targets', '.md', '.txt', '.xml', '.json', '.tsv',
                  '.yml', '.yaml', '.sh', '.toml'}
 TEXT_NAMES = {'license', 'license.txt', 'copying', 'makefile', '.gitignore',
               '.gitattributes', '.editorconfig', 'pre-commit'}

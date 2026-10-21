@@ -44,6 +44,7 @@ def main():
         ('rtg/android/tests/t_rtg_audio_renderer.c', ['rtg/android/rtg_audio_renderer.c'], []),
         ('rtg/android/tests/t_audio_renderer_lifecycle.c', [], []),
         ('rtg/android/tests/t_vibration_backend.c', ['rtg/android/vibration_backend.c'], []),
+        ('rtg/android/tests/t_touch_hint.c', ['rtg/android/touch_hint.c'], []),
     ]
     for source, production, flags in tests:
         binary = out / Path(source).stem

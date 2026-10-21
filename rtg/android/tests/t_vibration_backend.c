@@ -5,9 +5,12 @@
 #include <pthread.h>
 #include <stdio.h>
 
-static void expect(uint64_t session,uint32_t epoch,int amplitude){
+static void expect(uint64_t session,uint32_t epoch,int intensity,int sharpness){
     int64_t event=dm_android_vibration_wait(session);
-    assert(event>=0&&(uint32_t)(event>>8)==epoch&&(event&255)==amplitude);
+    if(!(event>=0&&DM_VIBRATION_EPOCH(event)==epoch&&DM_VIBRATION_SHARPNESS(event)==sharpness&&DM_VIBRATION_INTENSITY(event)==intensity))
+        fprintf(stderr,"vibration event=%lld expected epoch=%u intensity=%d sharpness=%d\n",
+                (long long)event,epoch,intensity,sharpness);
+    assert(event>=0&&DM_VIBRATION_EPOCH(event)==epoch&&DM_VIBRATION_SHARPNESS(event)==sharpness&&DM_VIBRATION_INTENSITY(event)==intensity);
 }
 static void *wait_closed(void *arg){assert(dm_android_vibration_wait(*(uint64_t *)arg)==-1);return NULL;}
 int main(void){
@@ -29,27 +32,28 @@ int main(void){
     assert(!dm_android_vibration_initialize(handles[0]));
     assert(!dm_android_vibration_initialize(handles[1]));
     assert(dm_android_vibration_initialize(0xdeadbeef)==EINVAL);
-    uint32_t epoch=dm_android_vibration_active(session,1);expect(session,epoch,0);
-    /* Both channels combine, stopping left never cancels the still-active right. */
-    assert(!dm_android_vibration_send(handles[0],&half));expect(session,epoch,128);
-    assert(!dm_android_vibration_send(handles[1],&full));expect(session,epoch,255);
-    assert(!dm_android_vibration_send(handles[0],&zero));
-    assert(!dm_android_vibration_send(handles[1],&zero));expect(session,epoch,0);
+    uint32_t epoch=dm_android_vibration_active(session,1);expect(session,epoch,0,0);
+    /* Both channels combine by band energy, not by max amplitude: half is
+     * sqrt(.5^2 + .25^2) = 0.559, and the carrier weights sharpness. */
+    assert(!dm_android_vibration_send(handles[0],&half));expect(session,epoch,143,112);
+    assert(!dm_android_vibration_send(handles[1],&full));expect(session,epoch,255,105);
+    assert(!dm_android_vibration_send(handles[0],&zero));expect(session,epoch,255,102);
+    assert(!dm_android_vibration_send(handles[1],&zero));expect(session,epoch,0,0);
     /* A complete short pulse between consumer wakes must not vanish. */
     assert(!dm_android_vibration_send(handles[0],&half));
     assert(!dm_android_vibration_send(handles[0],&zero));
-    expect(session,epoch,128);expect(session,epoch,0);
+    expect(session,epoch,143,112);expect(session,epoch,0,0);
     dm_vibration_value bad=half;bad.amplitude_low=NAN;
     assert(dm_android_vibration_send(handles[0],&bad)==EINVAL);
     assert(dm_android_vibration_send(handles[0],NULL)==EINVAL);
     /* Pausing discards queued effects; background sends cannot restart motor. */
     assert(!dm_android_vibration_send(handles[0],&full));
-    epoch=dm_android_vibration_active(session,0);expect(session,epoch,0);
+    epoch=dm_android_vibration_active(session,0);expect(session,epoch,0,0);
     assert(!dm_android_vibration_send(handles[0],&full));
-    epoch=dm_android_vibration_active(session,1);expect(session,epoch,0);
+    epoch=dm_android_vibration_active(session,1);expect(session,epoch,0,0);
     /* Repeated equal values don't fill the queue. */
     for(unsigned i=0;i<100000;i++)assert(!dm_android_vibration_send(handles[0],&half));
-    assert(!dm_android_vibration_send(handles[0],&zero));expect(session,epoch,128);expect(session,epoch,0);
+    assert(!dm_android_vibration_send(handles[0],&zero));expect(session,epoch,143,112);expect(session,epoch,0,0);
     pthread_t worker;assert(!pthread_create(&worker,NULL,wait_closed,&session));
     dm_android_vibration_unbind(session);assert(!pthread_join(worker,NULL));
     assert(!dm_android_vibration_permitted());
@@ -59,5 +63,6 @@ int main(void){
     assert(dm_android_vibration_handles(handles,2,0x20,2)==2);
     assert(handles[0]==0x2004&&handles[1]==0x12004);
     dm_android_vibration_unbind(next);
-    puts("PASS vibration ABI, enumeration, dual-channel mix, short pulses, deduplication, invalid values, pause/resume, blocking shutdown and stale owner");
+    puts("PASS vibration ABI, enumeration, two-band energy mix, sharpness, short pulses, deduplication, invalid values, pause/resume, blocking shutdown and stale owner");
+    return 0;
 }

@@ -28,18 +28,18 @@ final class RendererSettingsDialog {
         this.activity=activity;this.applied=applied;store=new RendererOptionsStore(activity);
         LinearLayout body=new LinearLayout(activity);body.setOrientation(LinearLayout.VERTICAL);body.setPadding(dp(18),dp(8),dp(18),dp(12));
         text(body,"触控",18);
-        text(body,"左侧方向盘，右半屏 A；按住持续输入，抬手松开。左上独立 B 键用于返回或辅助操作；按住 Y 看示范，− 跳过练习，+ 暂停。方向盘以外的左侧空白不触发按键。",14);
+        text(body,"右半屏 A；左侧按键随当前关卡自动切换为单击、左右两键或四向键。左下小十字键，侧边有 B、Y、X、−、+。按住持续输入，抬手松开；左侧空白不触发按键。",14);
         TextView opacityLabel=text(body,"按键不透明度："+touch.opacity()+"%",16);
         SeekBar opacity=new SeekBar(activity);opacity.setMax(100);opacity.setProgress(touch.opacity());opacity.setMinHeight(dp(48));
         opacity.setContentDescription("按键不透明度，0 为隐藏，100 为完全显示");
         body.addView(opacity,new LinearLayout.LayoutParams(-1,dp(48)));
-        text(body,"只改变按键显示，不改变触控范围。0% 隐藏轮廓，按下时仍有反馈。设置入口始终可见。",13);
+        text(body,"只改变按键显示，不改变触控范围。0% 隐藏轮廓，按下时仍有反馈。",13);
         opacity.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
             @Override public void onProgressChanged(SeekBar bar,int value,boolean fromUser){if(fromUser){touch.setOpacity(value);opacityLabel.setText("按键不透明度："+value+"%");}}
             @Override public void onStartTrackingTouch(SeekBar bar){}
             @Override public void onStopTrackingTouch(SeekBar bar){}
         });
-        Switch extras=option(body,"显示额外按键","展开 X、L、R、ZL、ZR，供打鼓课程、玩具和音乐等模式使用。");
+        Switch extras=option(body,"始终显示小十字键","关卡只用到一两个按键时，小十字键默认收起；打开后始终显示，便于随时转向。");
         extras.setChecked(touch.extraButtons());extras.setOnCheckedChangeListener((v,on)->touch.setExtraButtons(on));
         text(body,"图形优化",18);
         clear=option(body,"清屏合并","将符合条件的整屏清除并入绘制，减少独立清除和显存读取。关闭后恢复原清除路径。");
